@@ -1,0 +1,508 @@
+---
+title: "Figures and tables"
+author: "Jahred Liddie"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+library(sf)
+library(qwraps2)
+library(MetBrewer)
+library(tidyverse)
+library(corrplot)
+library(usmap)
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+dat <- read.csv("../data/processed/covid_ucmr.csv")
+statewide <- read.csv("../data/processed/covid_CWS.csv")
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Note: this RMD was not formatted to be knitted, but was only for retrieving and saving relevant tables and figures in this manuscript.**
+
+# Main figures and tables
+## Table 1
+
+```{r,  results = 'asis', echo = FALSE}
+
+options(qwraps2_markup = 'markdown')
+
+summary_stats <-
+  list("Table 1" =
+       list("Total population [ACS; millions]" = ~round(sum(tot_pop)/1000000, 1),
+            "COVID-19 death rate [deaths per 10,000]" = ~mean_sd(deaths/tot_pop*1e4, digits = 1),
+            "% Black residents" = ~mean_sd(percBlack, digits = 1),
+            "% Hispanic residents" = ~mean_sd(percHisp, digits = 1),
+            "% White residents" = ~mean_sd(percWhite, digits = 1),
+            "% residents aged 65+"= ~mean_sd(perc65plus, digits = 1),
+            "% homeowners"= ~mean_sd(perchomeowner, digits = 1),
+            "Mean income [USD]" = ~mean_sd(median_income, digits = 1),
+            "Mean household value [USD]" = ~mean_sd(med_OOHH_value, digits = 1),
+            "% residents with < HS education" = ~mean_sd(percunderHSed, digits = 1),
+            "Pop. density [#/sqmi]" = ~mean_sd(pop.dens.sqmi),
+            "Days since first case" = ~mean_sd(days_since_fc),
+            "Total hospital beds [thousands]" = ~mean_sd(bed.1000, digits = 1))
+       )
+
+qwraps2::summary_table(statewide, summary_stats, by = "Any_bin")     
+qwraps2::summary_table(dat, summary_stats, by = "Any5")     
+
+qwraps2::summary_table(statewide, summary_stats)     
+qwraps2::summary_table(dat, summary_stats)     
+
+```
+
+## Table 2 and graphical abstract
+
+```{r, echo=FALSE}
+main.results <- read.csv("../results/main_regression_results.csv")
+
+knitr::kable(main.results %>% 
+        dplyr::select(exposure.desc, full.estimate, nobs),
+        col.names = c("Exposure desc.", "Result","N"))
+
+main.results <- main.results %>%
+  mutate(p.change = CIR - 1,
+         p.change.LCL = CIR.LCI - 1,
+         p.change.UCL = CIR.UCI - 1,
+         exposure.desc.detailed = ifelse(exposure.desc == "Any_bin (Statewide)", "Detection > 5 ng/L", 
+                                         ifelse(exposure.desc == "Any_reg (Statewide)", "Detection > MCL", 
+                                                "Detection over\nreporting limits"))
+         )
+main.results <- rbind(main.results, NA)
+main.results$exposure.desc.detailed[is.na(main.results$logCIR)] <- "Detection > MCL_Z" # placeholder
+
+main.results <- main.results %>% 
+  filter(!grepl("unadjusted", exposure.desc))
+
+ggplot(main.results, aes(x = exposure.desc.detailed, y = p.change)) +
+  geom_point(size = 4, position = position_dodge(width = 0.1), color = met.brewer("Egypt")[1]) +
+  geom_errorbar(aes(ymin = p.change.LCL, ymax = p.change.UCL), color = met.brewer("Egypt")[1], 
+                width = 0.5, size = 3, position = position_dodge(width = 0.1)) +
+  theme_classic() +
+  labs(y = "Change in COVID-19 mortality", x = "") +
+  scale_y_continuous(limits = c(-5/100, 25/100), breaks = seq(-5/100, 25/100, by = 5/100), labels = scales::percent_format()) +
+  geom_hline(yintercept = 0, linetype = "dashed", size = 0.5) +
+    theme(axis.text = element_text(size = 20, color = "black"),
+          axis.title = element_text(size = 25, color = "black"),
+          plot.margin = unit(c(0.5,0.1,0.1,0.1), "cm"))
+
+main.results$toc_desc <- factor(
+  c("> 5 ng/L", "> state\nMCL", 
+    "> reporting\nlimits", ""))
+
+main.results$toc_desc <- fct_relevel(main.results$toc_desc,
+                                   c("> 5 ng/L", "> state\nMCL", 
+                                     "", "> reporting\nlimits"))
+
+ggplot(main.results, aes(x = toc_desc, y = p.change)) +
+  geom_point(size = 10, position = position_dodge(width = 0.1), color = met.brewer("Egypt")[1]) +
+  geom_errorbar(aes(ymin = p.change.LCL, ymax = p.change.UCL), color = met.brewer("Egypt")[1], 
+                width = 0.5, size = 5, position = position_dodge(width = 0.1)) +
+  theme_classic() +
+  labs(y = "", x = "") +
+  scale_y_continuous(limits = c(-5/100, 25/100), breaks = seq(-10/100, 25/100, by = 10/100),
+                     labels = scales::percent_format()) +
+  geom_hline(yintercept = 0, linetype = "dashed", size = 0.5) +
+    theme(axis.text = element_text(size = 40, color = "black", face = "bold"),
+          plot.margin = unit(c(0.5,0.1,0.1,0.1), "cm"),
+          axis.line = element_line(linewidth = 2))
+
+if (FALSE) {
+  ggsave("../Figures/toc/results_graph_toc.png", bg = "white", dpi = 600, height = 8, width = 12)
+}
+
+```
+
+## Figure 1
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# state county geometries from usmap
+statewide_counties <- plot_usmap(regions = "counties")
+
+statewide_counties$data$county <- str_replace(string = statewide_counties$data$county,
+                                          pattern = " County", 
+                                          replacement = "")
+statewide_counties$data$state_county <- paste(tolower(statewide_counties$data$abbr), 
+                                          tolower(statewide_counties$data$county), 
+                                          sep = "_")
+
+statewide_counties$data <- left_join(statewide_counties$data, 
+                                     statewide %>% 
+                                     dplyr::select(state_county, Any_bin,
+                                                   Any_reg_bin))
+
+p1 <- statewide_counties +
+  geom_sf(aes(fill = as.factor(Any_bin)), color = "black", linewidth = 0.1) +
+  scale_fill_manual(name = "",
+                    labels = c("No detection\nabove 5 ng/L", "Detection\nabove 5 ng/L", "No data"),
+                    values = c("white", met.brewer("Egypt")[1]), na.value = "darkgrey") +
+  labs(subtitle = "Statewide sampling of 18 states (2017-2020)") +
+  theme(panel.background = element_rect(color = "white", fill = "white"),
+        legend.text = element_text(size=13),
+        plot.subtitle = element_text(size=16, face = "bold"),
+        legend.position = "bottom")
+
+p1
+
+if (FALSE) {
+  ggsave("../Figures/PFAS_detection_statewide.png", dpi = 600, height = 7, width = 7)
+}
+
+# UCMR county geometries from usmap
+ucmr_counties <- plot_usmap(regions = "counties")
+
+ucmr_counties$data$county <- str_replace(string = ucmr_counties$data$county,
+                                         pattern = " County", 
+                                         replacement = "")
+ucmr_counties$data$state_county <- paste(tolower(ucmr_counties$data$abbr), 
+                                         tolower(ucmr_counties$data$county), 
+                                         sep = "_")
+
+patterns <- tibble(patterns = c(" municipality", " parish", " municipio",
+                                "NA_district of columbia", "ny_new york city",
+                                " borough$", " city and$", 
+                                " census area$", # alaska county regex
+                                "í", "ó", "ü", "ñ", "á"),
+                   replacements = c("", "", "", "dc_district of columbia", 
+                                    "ny_new york", "", "", "",
+                                    "i", "o", "u", "n", "a")
+)
+
+for (i in seq_along(patterns$patterns)) {
+  
+  ucmr_counties$data$state_county <- str_replace(string = ucmr_counties$data$state_county,
+                                                 pattern = patterns$patterns[i],
+                                                 replacement = patterns$replacements[i])
+}
+
+
+ucmr_counties$data <- left_join(ucmr_counties$data, 
+                                dat %>% 
+                                dplyr::select(state_county, Any5))
+
+
+p2 <- ucmr_counties +
+  geom_sf(aes(fill = as.factor(Any5)), color = "black", linewidth = 0.1) +
+  scale_fill_manual(name = "",
+                    labels = c("Concentrations below\nreporting limits",
+                               "Concentrations above\nreporting limits",
+                               "No data"),
+                    values = c("white", met.brewer("Egypt")[1]),
+                               na.value = "darkgrey") +
+  labs(subtitle = "Third Unregulated Contaminant Monitoring Rule (2013-2015)") +
+  theme(panel.background = element_rect(color = "white", fill = "white"),
+        legend.text = element_text(size=13),
+        plot.subtitle = element_text(size=16, face = "bold"),
+        legend.position = "bottom")
+
+p2
+
+if (FALSE) {
+  ggsave("../Figures/PFAS_detection_ucmr.png", dpi = 600, height = 7, width = 7)
+}
+
+
+cowplot::plot_grid(p2, p1, ncol = 1, nrow = 2)
+
+if (FALSE) {
+  ggsave("../Figures/PFAS_detection_both.svg", dpi = 600, height = 10, width = 7)
+  ggsave("../Figures/PFAS_detection_both.png", dpi = 600, height = 10, width = 7)
+}
+
+p2 <- ucmr_counties +
+  geom_sf(aes(fill = as.factor(Any5)), color = "black", linewidth = 0.1) +
+  scale_fill_manual(name = "",
+                    labels = c("Concentrations below\nreporting limits",
+                               "Concentrations above\nreporting limits",
+                               "No data"),
+                    values = c("white", met.brewer("Egypt")[1]),
+                               na.value = "darkgrey") +
+  labs(subtitle = "Third Unregulated Contaminant Monitoring Rule (2013-2015)") +
+  theme(panel.background = element_rect(color = "white", fill = "white"),
+        legend.text = element_text(size=13),
+        plot.subtitle = element_text(size=15),
+        legend.position = "bottom")
+
+if (FALSE) {
+  # saved here:
+  ggsave("../Figures/PFAS_detection_ucmr.png", dpi = 600, height = 7, width = 7)
+}
+
+p2_toc <- ucmr_counties +
+  geom_sf(aes(fill = as.factor(Any5)), color = "black", linewidth = 0.1) +
+  scale_fill_manual(name = "",
+                    labels = c("Detection", "No detection", "No data"),
+                    values = c("white", met.brewer("Egypt")[1]),
+                               na.value = "darkgrey") +
+  theme(panel.background = element_rect(color = "white", fill = "white"),
+        legend.text = element_text(size=13),
+        plot.subtitle = element_text(size=15),
+        legend.position = "none")
+
+if (FALSE) {
+  # saved here:
+  ggsave("../Figures/toc/PFAS_detection_ucmr_toc.png", dpi = 600, height = 7, width = 7, bg = "white")
+}
+
+```
+
+
+# Supplemental figures and tables
+
+## Figure S3
+
+```{r, fig.height=6, fig.width=10, echo=FALSE, message=FALSE, warning=FALSE}
+
+# state county geometries from usmap
+state.counties <- plot_usmap(regions = "counties")
+state.counties$data$county <- str_replace(string = state.counties$data$county,
+                                          pattern = " County", 
+                                          replacement = "")
+state.counties$data$state_county <- paste(tolower(state.counties$data$abbr), 
+                                          tolower(state.counties$data$county), 
+                                          sep = "_")
+
+patterns <- tibble(patterns = c(" municipality", " parish", " municipio",
+                                "NA_district of columbia", "ny_new york city",
+                                " borough$", " city and$", 
+                                " census area$", # alaska county regex
+                                "í", "ó", "ü", "ñ", "á"),
+                   replacements = c("", "", "", "dc_district of columbia", 
+                                    "ny_new york", "", "", "",
+                                    "i", "o", "u", "n", "a")
+)
+
+for (i in seq_along(patterns$patterns)) {
+  
+  state.counties$data$state_county <- str_replace(string = state.counties$data$state_county,
+                                                  pattern = patterns$patterns[i],
+                                                  replacement = patterns$replacements[i])
+}
+
+# create exists indicator (for CWS data)
+statewide.counties <- tibble(abbr = statewide$state, state_county = statewide$state_county)
+ucmr.counties <- tibble(abbr = dat$state, state_county = dat$state_county)
+
+state.counties$data$statewide.match <- ifelse(state.counties$data$state_county %in% 
+                                              statewide.counties$state_county,
+                                              "Statewide sampling of\n18 states (2017-2020)", 
+                                              "No data")
+                                    
+state.counties$data$ucmr.match <- ifelse(state.counties$data$state_county %in% 
+                                         ucmr.counties$state_county,
+                                         "Third Unregulated Contaminant\nMonitoring Rule (2013-2015)",
+                                         "No data")
+
+state.counties$data$match <- ifelse(state.counties$data$state_county %in% 
+                                    statewide.counties$state_county &
+                                    !(state.counties$data$state_county %in%
+                                      ucmr.counties$state_county), 
+                                    "Statewide sampling of\n18 states (2017-2020)", 
+                                    
+                                    ifelse(!(state.counties$data$state_county %in% 
+                                           statewide.counties$state_county) &
+                                           state.counties$data$state_county %in%
+                                           ucmr.counties$state_county,
+                                    "Third Unregulated Contaminant\nMonitoring Rule (2013-2015)",
+                                    
+                                    ifelse(state.counties$data$state_county %in% 
+                                           statewide.counties$state_county &
+                                           state.counties$data$state_county %in%
+                                           ucmr.counties$state_county, "Both", "No data")
+                                    )
+)
+
+state.counties$data$match <- fct_relevel(state.counties$data$match, 
+                                         "Statewide sampling of\n18 states (2017-2020)",
+                                         "Third Unregulated Contaminant\nMonitoring Rule (2013-2015)",
+                                         "Both", "No data")
+
+# plot
+state.counties +
+  geom_sf(aes(fill = match), color = "black", linewidth = 0.1) +
+  scale_fill_manual(name = "", 
+                    values = c("Both" = "darkgreen", 
+                               "Third Unregulated Contaminant\nMonitoring Rule (2013-2015)" = "skyblue",
+                               "Statewide sampling of\n18 states (2017-2020)" = met.brewer("Derain")[1],
+                               "No data" = "darkgrey")) + 
+  theme(panel.background = element_rect(color = "white", fill = "white"),
+        legend.text = element_text(size = 8),
+        legend.position = "bottom",
+        legend.justification = "center",
+        plot.caption = element_text(size = 8, hjust = 0),
+        plot.margin = unit(c(0.5, 0.5, 0.25, 0.5), "cm"),
+        legend.box.margin = margin(0.75, 0, 0.75, 0))
+
+if (FALSE) {
+ggsave("../Figures/all_study_coverage.svg", bg = "white", dpi = 600, height = 7, width = 7)
+ggsave("../Figures/all_study_coverage.png", bg = "white", dpi = 600, height = 7, width = 7)
+}
+
+state.counties +
+  geom_sf(aes(fill = statewide.match), color = "black", linewidth = 0.1) +
+  scale_fill_manual(name = "", 
+                    values = c("Statewide sampling of\n18 states (2017-2020)" = met.brewer("Derain")[1],
+                               "No data" = "darkgrey")) +
+  theme(panel.background = element_rect(color = "white", fill = "white"),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size=10),
+        legend.position = "none")
+
+if (FALSE) {
+ggsave("../Figures/state_study_coverage.svg", dpi = 600, height = 7, width = 7)
+}
+
+state.counties +
+  geom_sf(aes(fill = ucmr.match), color = "black", linewidth = 0.1) +
+  scale_fill_manual(name = "", 
+                    values = c("Third Unregulated Contaminant\nMonitoring Rule (2013-2015)" = "skyblue",
+                               "No data" = "darkgrey")) +
+  theme(panel.background = element_rect(color = "white", fill = "white"),
+        legend.title = element_text(size=10),
+        legend.text = element_text(size=10),
+        legend.position = "none")
+
+if (FALSE) {
+ggsave("../Figures/ucmr_study_coverage.svg", dpi = 600, height = 7, width = 7)
+}
+```
+
+\newpage
+
+## Table S2
+
+```{r, echo=FALSE}
+
+statewide <- statewide %>%
+  rowwise() %>%
+  mutate(detect_count = sum(PFOA_any, PFOS_any, PFBS_any, PFHxS_any, PFNA_any))
+  
+dat <- dat %>%
+  rowwise() %>%
+  mutate(detect_count = sum(PFOA_any, PFOS_any, PFBS_any, PFHxS_any, PFNA_any))
+
+prop.table(table(statewide$detect_count))
+prop.table(table(statewide$detect_count[statewide$Any_bin==1]>=2))
+# SSD: among those with at least one detect, 
+  # 70% have detectable levels of another PFAS
+
+prop.table(table(dat$detect_count))
+prop.table(table(dat$detect_count[dat$Any5==1]>=2))
+# UCMR 3: among those with at least one detect (> MRL), 
+  # 55.8% have detectable levels of another PFAS
+
+totals_statewide <- statewide %>% filter(Any_bin == 1) %>%
+  group_by(detect_count) %>%
+  summarise(n = n(),
+            perc = round(n/nrow(statewide %>% filter(Any_bin == 1))*100, 1)) %>%
+  mutate(dataset = "Statewide sampling")
+
+totals_ucmr <- dat %>% filter(Any5 == 1) %>%
+  group_by(detect_count) %>%
+  summarise(n = n(),
+            perc = round(n/nrow(dat %>% filter(Any5 == 1))*100, 1)) %>%
+  mutate(dataset = "UCMR 3")
+
+num_detects <- rbind(totals_statewide, totals_ucmr)
+
+if (FALSE) {
+  write.csv(num_detects, "../../results/number of detects.csv")
+}
+```
+
+## Table S5
+
+```{r, results = 'asis', echo = FALSE}
+source("2a_Modelling_matching.R")
+
+qwraps2::summary_table(match_statewide_PSM, summary_stats)
+
+qwraps2::summary_table(match_ucmr_PSM, summary_stats)
+
+```
+
+# UCMR 5 data and full statewide sampling data
+
+```{r, echo=FALSE}
+# note: this requires a processed version of the UCMR 5 data; 
+  # version: July 2024 release
+ucmr5 <- read.csv("../../../Centralized datasets/UCMR data/cleaned/UCMR 5/UCMR5_data_CWSonly.csv")
+
+# drop systems missing these analytes
+ucmr5 <- ucmr5 %>% filter(!is.na(PFBA_detect) & !is.na(PFOA_detect) & !is.na(PFOS_detect))
+
+# Kendall coefficients
+cor.test(ucmr5$PFBA_detect, ucmr5$PFBS_detect, method = "kendall")
+cor.test(ucmr5$PFBA_detect, ucmr5$PFHxS_detect, method = "kendall")
+cor.test(ucmr5$PFBA_detect, ucmr5$PFOS_detect, method = "kendall")
+cor.test(ucmr5$PFBA_detect, ucmr5$PFOA_detect, method = "kendall")
+cor.test(ucmr5$PFBA_detect, ucmr5$PFNA_detect, method = "kendall")
+cor.test(ucmr5$PFBA_detect, ucmr5$Any_PFAS_detect5, method = "kendall")
+
+mean(ucmr5$PFBA_detect[ucmr5$PFBS_detect==1])
+mean(ucmr5$PFBA_detect[ucmr5$PFHxS_detect==1])
+mean(ucmr5$PFBA_detect[ucmr5$PFOS_detect==1])
+mean(ucmr5$PFBA_detect[ucmr5$PFOA_detect==1])
+mean(ucmr5$PFBA_detect[ucmr5$PFNA_detect==1])
+mean(ucmr5$PFBA_detect[ucmr5$Any_PFAS_detect5==1])
+
+```
+
+\newpage
+
+The following code chunk/output documents pairwise correlation coefficents among covariates in the SSD and UCMR 3 objects.
+
+```{r, echo=FALSE}
+
+corr_dat1 <- statewide %>%
+  dplyr::select(starts_with("perc"), median_income, med_OOHH_value, pop.dens.sqmi,
+         bed.1000, days_since_fc, -percColor, -perc15_44, -perc45_64)
+
+corr_dat1 <- corr_dat1 %>%
+  rename("% Black" = percBlack,
+         "% Hispanic/Latino" = percHisp,
+         "% White" = percWhite,
+         "% aged 65+" = perc65plus,
+         "% homeowner" = perchomeowner,
+         "% < HS ed." = percunderHSed,
+         "Median income" = median_income,
+         "Median house value" = med_OOHH_value,
+         "Pop. density" = pop.dens.sqmi,
+         "Hospital beds" = bed.1000,
+         "Days since 1st case" = days_since_fc)
+
+corrs <- cor(corr_dat1, method = "spearman", use = "pairwise.complete.obs")
+
+corrplot(corrs, method = 'number', type = 'lower', diag = FALSE,
+            col = COL2('RdYlBu'), tl.col = 'black')
+
+corr_dat2 <- dat %>%
+  dplyr::select(starts_with("perc"), median_income, med_OOHH_value, pop.dens.sqmi,
+         bed.1000, days_since_fc, -percColor, -perc15_44, -perc45_64)
+
+corr_dat2 <- corr_dat2 %>%
+  rename("% Black" = percBlack,
+         "% Hispanic/Latino" = percHisp,
+         "% White" = percWhite,
+         "% aged 65+" = perc65plus,
+         "% homeowner" = perchomeowner,
+         "% < HS ed." = percunderHSed,
+         "Median income" = median_income,
+         "Median house value" = med_OOHH_value,
+         "Pop. density" = pop.dens.sqmi,
+         "Hospital beds" = bed.1000,
+         "Days since 1st case" = days_since_fc)
+
+corrs <- cor(corr_dat2, method = "spearman", use = "pairwise.complete.obs")
+
+corrplot(corrs, method = 'number', type = 'lower', diag = FALSE,
+            col = COL2('RdYlBu'), tl.col = 'black')
+
+```
